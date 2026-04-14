@@ -1,0 +1,14 @@
+[build]
+builder = "NIXPACKS"
+
+[build.nixpacks]
+# Installs the C compiler and libraries needed for go-sqlite3
+pkgs = ["gcc", "musl"] 
+# Tells Go to enable CGO during the build phase
+env = { CGO_ENABLED = "1" }
+
+[deploy]
+# Tells Railway how to start your app
+# Replace 'main.go' with the path to your entry point if it's different
+startCommand = "go run main.go"
+restartPolicy = "on-failure"
