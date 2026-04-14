@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	_ "github.com/mattn/go-sqlite3"
+	_ "modernc.org/sqlite"
 )
 
 // --- Data Models ---
@@ -61,7 +61,7 @@ var db *sql.DB
 
 func initDB() {
 	var err error
-	db, err = sql.Open("sqlite3", "./profiles.db")
+	db, err = sql.Open("sqlite", "./profiles.db")
 	if err != nil {
 		log.Fatal("DB Connection Error:", err)
 	}
