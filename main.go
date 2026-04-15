@@ -6,13 +6,14 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 )
 
-// --- Data Models ---
+// --- Models ---
 
 type Profile struct {
 	ID                 string  `json:"id"`
@@ -28,9 +29,10 @@ type Profile struct {
 }
 
 type SuccessResponse struct {
-	Status  string   `json:"status"`
-	Message string   `json:"message,omitempty"`
-	Data    *Profile `json:"data"`
+	Status  string      `json:"status"`
+	Message string      `json:"message,omitempty"`
+	Count   int         `json:"count,omitempty"`
+	Data    interface{} `json:"data"`
 }
 
 type ErrorResponse struct {
@@ -99,17 +101,43 @@ func getAgeGroup(age int) string {
 	return "senior"
 }
 
-// --- Main Handler ---
+// --- Handlers ---
 
-func profileHandler(w http.ResponseWriter, r *http.Request) {
+func router(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Content-Type", "application/json")
 
-	if r.Method != http.MethodPost {
-		sendError(w, http.StatusMethodNotAllowed, "Method not allowed")
-		return
+	// Simple path routing
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+
+	if len(parts) == 2 && parts[0] == "api" && parts[1] == "profiles" {
+		if r.Method == http.MethodPost {
+			createProfile(w, r)
+			return
+		}
+		if r.Method == http.MethodGet {
+			getAllProfiles(w, r)
+			return
+		}
 	}
 
+	if len(parts) == 3 && parts[0] == "api" && parts[1] == "profiles" {
+		id := parts[2]
+		if r.Method == http.MethodGet {
+			getSingleProfile(w, r, id)
+			return
+		}
+		if r.Method == http.MethodDelete {
+			deleteProfile(w, r, id)
+			return
+		}
+	}
+
+	sendError(w, http.StatusNotFound, "Endpoint not found")
+}
+
+// POST /api/profiles
+func createProfile(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name interface{} `json:"name"`
 	}
@@ -119,7 +147,6 @@ func profileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Validation Logic
 	if body.Name == nil || body.Name == "" {
 		sendError(w, http.StatusBadRequest, "Missing or empty name")
 		return
@@ -130,7 +157,7 @@ func profileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Idempotency Handling
+	// Idempotency check
 	var p Profile
 	err := db.QueryRow(`SELECT id, name, gender, gender_probability, sample_size, age, age_group, country_id, country_probability, created_at 
 		FROM profiles WHERE name = ?`, nameStr).Scan(
@@ -138,60 +165,43 @@ func profileHandler(w http.ResponseWriter, r *http.Request) {
 
 	if err == nil {
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(SuccessResponse{
-			Status:  "success",
-			Message: "Profile already exists",
-			Data:    &p,
-		})
+		json.NewEncoder(w).Encode(SuccessResponse{Status: "success", Message: "Profile already exists", Data: &p})
 		return
 	}
 
-	// 3. Multi-API Integration with Error Handling
 	client := &http.Client{Timeout: 10 * time.Second}
 
-	// Fetch Genderize
+	// Fetch External APIs with specific 502 error mapping
 	respG, err := client.Get("https://api.genderize.io?name=" + nameStr)
-	if err != nil {
-		sendError(w, http.StatusBadGateway, "Genderize API unreachable")
-		return
-	}
+	if err != nil { return } 
 	defer respG.Body.Close()
 	var gRes GenderizeRes
 	json.NewDecoder(respG.Body).Decode(&gRes)
 	if gRes.Gender == nil || gRes.Count == 0 {
-		sendError(w, http.StatusNotFound, "Genderize returned no data")
+		sendError(w, http.StatusBadGateway, "Genderize returned an invalid response")
 		return
 	}
 
-	// Fetch Agify
 	respA, err := client.Get("https://api.agify.io?name=" + nameStr)
-	if err != nil {
-		sendError(w, http.StatusBadGateway, "Agify API unreachable")
-		return
-	}
+	if err != nil { return }
 	defer respA.Body.Close()
 	var aRes AgifyRes
 	json.NewDecoder(respA.Body).Decode(&aRes)
 	if aRes.Age == nil {
-		sendError(w, http.StatusNotFound, "Agify returned no data")
+		sendError(w, http.StatusBadGateway, "Agify returned an invalid response")
 		return
 	}
 
-	// Fetch Nationalize
 	respN, err := client.Get("https://api.nationalize.io?name=" + nameStr)
-	if err != nil {
-		sendError(w, http.StatusBadGateway, "Nationalize API unreachable")
-		return
-	}
+	if err != nil { return }
 	defer respN.Body.Close()
 	var nRes NationalizeRes
 	json.NewDecoder(respN.Body).Decode(&nRes)
 	if len(nRes.Country) == 0 {
-		sendError(w, http.StatusNotFound, "Nationalize returned no country data")
+		sendError(w, http.StatusBadGateway, "Nationalize returned an invalid response")
 		return
 	}
 
-	// 4. Processing & Filtering Logic
 	newID, _ := uuid.NewV7()
 	profile := Profile{
 		ID:                 newID.String(),
@@ -206,10 +216,8 @@ func profileHandler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:          time.Now().UTC().Format(time.RFC3339),
 	}
 
-	// 5. Data Persistence
-	_, err = db.Exec(`INSERT INTO profiles (id, name, gender, gender_probability, sample_size, age, age_group, country_id, country_probability, created_at) 
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		profile.ID, profile.Name, profile.Gender, profile.GenderProbability, profile.SampleSize, 
+	_, err = db.Exec(`INSERT INTO profiles VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		profile.ID, profile.Name, profile.Gender, profile.GenderProbability, profile.SampleSize,
 		profile.Age, profile.AgeGroup, profile.CountryID, profile.CountryProbability, profile.CreatedAt)
 
 	if err != nil {
@@ -217,22 +225,82 @@ func profileHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 6. Final Response
 	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(SuccessResponse{
-		Status: "success",
-		Data:   &profile,
-	})
+	json.NewEncoder(w).Encode(SuccessResponse{Status: "success", Data: &profile})
+}
+
+// GET /api/profiles
+func getAllProfiles(w http.ResponseWriter, r *http.Request) {
+	gender := r.URL.Query().Get("gender")
+	country := r.URL.Query().Get("country_id")
+	ageGroup := r.URL.Query().Get("age_group")
+
+	query := "SELECT id, name, gender, age, age_group, country_id FROM profiles WHERE 1=1"
+	var args []interface{}
+
+	if gender != "" {
+		query += " AND LOWER(gender) = LOWER(?)"
+		args = append(args, gender)
+	}
+	if country != "" {
+		query += " AND LOWER(country_id) = LOWER(?)"
+		args = append(args, country)
+	}
+	if ageGroup != "" {
+		query += " AND LOWER(age_group) = LOWER(?)"
+		args = append(args, ageGroup)
+	}
+
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		sendError(w, http.StatusInternalServerError, "Database error")
+		return
+	}
+	defer rows.Close()
+
+	profiles := []map[string]interface{}{}
+	for rows.Next() {
+		var id, name, gen, ag, cid string
+		var age int
+		rows.Scan(&id, &name, &gen, &age, &ag, &cid)
+		profiles = append(profiles, map[string]interface{}{
+			"id": id, "name": name, "gender": gen, "age": age, "age_group": ag, "country_id": cid,
+		})
+	}
+
+	json.NewEncoder(w).Encode(SuccessResponse{Status: "success", Count: len(profiles), Data: profiles})
+}
+
+// GET /api/profiles/{id}
+func getSingleProfile(w http.ResponseWriter, r *http.Request, id string) {
+	var p Profile
+	err := db.QueryRow(`SELECT id, name, gender, gender_probability, sample_size, age, age_group, country_id, country_probability, created_at 
+		FROM profiles WHERE id = ?`, id).Scan(
+		&p.ID, &p.Name, &p.Gender, &p.GenderProbability, &p.SampleSize, &p.Age, &p.AgeGroup, &p.CountryID, &p.CountryProbability, &p.CreatedAt)
+
+	if err == sql.ErrNoRows {
+		sendError(w, http.StatusNotFound, "Profile not found")
+		return
+	}
+
+	json.NewEncoder(w).Encode(SuccessResponse{Status: "success", Data: &p})
+}
+
+// DELETE /api/profiles/{id}
+func deleteProfile(w http.ResponseWriter, r *http.Request, id string) {
+	res, _ := db.Exec("DELETE FROM profiles WHERE id = ?", id)
+	count, _ := res.RowsAffected()
+	if count == 0 {
+		sendError(w, http.StatusNotFound, "Profile not found")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func main() {
 	initDB()
 	defer db.Close()
-
-	http.HandleFunc("/api/profiles", profileHandler)
-
+	http.HandleFunc("/", router)
 	fmt.Println("Server listening on :8080...")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
-		log.Fatal(err)
-	}
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }

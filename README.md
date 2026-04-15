@@ -1,130 +1,103 @@
-# Profile Aggregator API
+---
 
-A robust Go-based RESTful API that aggregates demographic data from multiple external sources, processes it with custom business logic, and persists the results in a SQLite database.
+# Profile Aggregator API (Stage 1)
+
+A robust Go-based RESTful API that aggregates demographic data from multiple external sources, applies business logic for classification, and manages a persistent SQLite database.
 
 ## Features
-
-  * **Multi-API Integration**: Combines data from Genderize.io, Agify.io, and Nationalize.io.
-  * **Data Transformation**: Automatically classifies age groups and identifies primary country origins.
-  * **Idempotency**: Prevents duplicate records; returning existing data for repeated names.
-  * **Persistence**: Uses SQLite for lightweight, reliable data storage.
-  * **Strict Validation**: Handles missing data and invalid types with clear error responses.
-  * **UUID v7**: Implements time-ordered UUIDs for primary keys.
+* **Full CRUD Support**: Create, Read (single & filtered list), and Delete profiles.
+* **Multi-API Data Mashup**: Real-time integration with **Genderize**, **Agify**, and **Nationalize**.
+* **Intelligent Classification**:
+    * **Age Grouping**: Categorizes age into `child`, `teenager`, `adult`, or `senior`.
+    * **Nationality**: Automatically selects the country with the highest probability.
+* **Idempotency**: Smart `POST` handling—if a name exists, the existing record is returned without creating a duplicate.
+* **Case-Insensitive Filtering**: Filter the list of profiles by `gender`, `country_id`, or `age_group` regardless of casing.
+* **UUID v7**: Uses time-ordered UUIDs for better database indexing performance.
 
 ## Tech Stack
+* **Language**: Go 1.21+
+* **Database**: SQLite (Pure Go driver: `modernc.org/sqlite`)
+* **ID Generation**: `github.com/google/uuid` (UUID v7)
 
-  * **Language**: Go 1.21+
-  * **Database**: SQLite3
-  * **Driver**: `github.com/mattn/go-sqlite3`
-  * **ID Generation**: `github.com/google/uuid`
-
------
+---
 
 ## Getting Started
 
 ### Prerequisites
+* Go installed on your system.
+* *Note: This version uses a pure Go SQLite driver, so no C compiler (GCC) is required.*
 
-  * Go installed on your machine.
-  * A C compiler (GCC) installed (required for the SQLite driver).
-
-### Installation
-
+### Installation & Running
 1.  **Clone the repository**:
-
     ```bash
     git clone https://github.com/yourusername/your-repo-name.git
     cd your-repo-name
     ```
-
 2.  **Install dependencies**:
-
     ```bash
     go mod tidy
     ```
-
 3.  **Run the server**:
-
     ```bash
     go run main.go
     ```
-
     The server will start on `http://localhost:8080`.
 
------
+---
 
 ## API Documentation
 
-### Create/Retrieve Profile
+### 1. Create Profile
+`POST /api/profiles`
+* **Request Body**: `{ "name": "ella" }`
+* **Success (201)**: New record created.
+* **Success (200)**: Name already exists, returns existing data with `"message": "Profile already exists"`.
 
-**Endpoint**: `POST /api/profiles`
+### 2. Get All Profiles
+`GET /api/profiles`
+* **Query Parameters (Optional)**: `gender`, `country_id`, `age_group`.
+* **Example**: `/api/profiles?gender=female&country_id=NG`
+* **Filtering**: Logic is case-insensitive.
 
-**Request Body**:
+### 3. Get Single Profile
+`GET /api/profiles/{id}`
+* **Success (200)**: Returns full profile details.
+* **Error (404)**: Profile not found.
 
-```json
-{
-  "name": "ella"
-}
-```
+### 4. Delete Profile
+`DELETE /api/profiles/{id}`
+* **Success (204)**: No Content.
+* **Error (404)**: Profile not found.
 
-**Success Response (201 Created or 200 OK)**:
+---
 
-```json
-{
-  "status": "success",
-  "data": {
-    "id": "018e6b8c-...",
-    "name": "ella",
-    "gender": "female",
-    "gender_probability": 0.99,
-    "sample_size": 1234,
-    "age": 46,
-    "age_group": "adult",
-    "country_id": "DRC",
-    "country_probability": 0.85,
-    "created_at": "2026-04-14T13:28:00Z"
-  }
-}
-```
+## ⚠️ Error Handling
+All error responses follow the structure: `{ "status": "error", "message": "<error message>" }`.
 
-**Error Response (400/422/404)**:
+* **400 Bad Request**: Missing or empty name.
+* **422 Unprocessable Entity**: Name is not a string.
+* **502 Bad Gateway**: External API (Genderize/Agify/Nationalize) returned an invalid response.
 
-```json
-{
-  "status": "error",
-  "message": "Missing or empty name"
-}
-```
-
------
-
-## Testing with cURL
-
-You can test the endpoint using the following command in your terminal:
-
-```bash
-curl -X POST http://localhost:8080/api/profiles \
-     -H "Content-Type: application/json" \
-     -d '{"name": "john"}'
-```
-
------
+---
 
 ## Database Schema
 
-The SQLite database `profiles.db` consists of a single table:
-
-| Column | Type | Constraints |
+| Column | Type | Description |
 | :--- | :--- | :--- |
 | `id` | TEXT | PRIMARY KEY (UUID v7) |
-| `name` | TEXT | UNIQUE |
-| `gender` | TEXT | |
-| `age` | INTEGER | |
-| `age_group` | TEXT | Derived Logic |
-| `country_id` | TEXT | ISO Code |
-| `created_at` | TEXT | ISO 8601 UTC |
+| `name` | TEXT | UNIQUE Name |
+| `gender` | TEXT | male/female |
+| `gender_probability` | REAL | Confidence score |
+| `sample_size` | INTEGER | Original `count` from API |
+| `age` | INTEGER | Predicted age |
+| `age_group` | TEXT | child/teenager/adult/senior |
+| `country_id` | TEXT | ISO Country Code |
+| `country_probability`| REAL | Confidence score |
+| `created_at` | TEXT | ISO 8601 UTC timestamp |
 
------
+---
 
-## 🔗 Public API URL
+## Project Links
+* **Live Deployment**: `https://hng14-stage0-production-d5bd.up.railway.app`
+* **GitHub**: `https://github.com/johnafariogun/hng14-stage0`
 
-[Insert your Deployment URL here, e.g., [https://your-app.render.com](https://www.google.com/search?q=https://your-app.render.com)]
